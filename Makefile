@@ -1,19 +1,15 @@
-#compiler and linker options
-CC = g++ 
-LDFLAGS = $(shell pkg-config --libs opencv4)
-CPPFLAGS =-mfpu=neon -mcpu=cortex-a8 -ftree-cevtorize -Werror `pkg-config --cflags opencv4` -O0 -lpthread -g
-SOURCES = $(wildcard *.cpp)
-INCLUDES = $(wildcard *.hpp)
-OBJECTS = $(SOURCES:.cpp=.o)
-TARGET=output
+CC = g++
+OUT = sobel.out 
+LDFLAGS = -g
+CFLAGS = -Werror -mfpu=neon -std=c++11 -O0 -lpthread
+SRCS = ${wildcard*.cpp}
 
-all: $(TARGET)
+all: default
 
-$(TARGET):$(OBJECTS)
-		$(CC) -o $@ $(CPPFLAGS) $^ $(LDFLAGS)
-
-%.o0 : %.c $.cpp
-		$(CC) -c $(CPPFLAGS) $<
+default:
+    ${CC} ${CFLAGS} ${LDFLAGS} `pkg-config --flags 
+    --libs opencv4` ${SRCS} - o ${OUT}
 
 clean:
-		rm -f $(TARGET) $(OBJECTS)
+    rm -rf ${OUT} ${OUT}.dSYM
+

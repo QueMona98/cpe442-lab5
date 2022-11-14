@@ -1,13 +1,14 @@
-/* Lab 4: Sobel Video Playback
+/* Lab 5: Sobel Video Playback
 Authors: Weston Keitz
          Natalie Tokhmakhian
          Quentin Monasterial
-Date: 10/31/2022
-Rev 1.0
+Date: 11/14/2022
+Rev 2.0
 */
 #include <opencv2/opencv.hpp>
 #include <iostream>
 #include <pthread.h>
+#include <arm_neon.h>
 
 using namespace cv;
 using namespace std;
@@ -21,6 +22,7 @@ void *thread0Status;
 typedef struct threadArgs{
     Mat* inputFrame;
     Mat* procFrame;
+
     int rows;
     int cols;
     
@@ -29,20 +31,12 @@ typedef struct threadArgs{
 } threadStruct;
 
 
-void* grayscale_sobel(void* threadArgs);
+void* grayscale_sobel_neon(void* threadArgs);
 
-void setupFunction(int numThreads){
-  pthread_barrier_init(&barrier, NULL, numThreads);
-}
 int main() {
-    int numThreads = 5; //main and thread
-   
 
-    pthread_attr_t attr;
-    pthread_attr_init(&attr);
-    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_JOINABLE);
+    int numThreads = 5; //main(1) and pthreads(4)
 
-  
     VideoCapture cap("ocean.mp4");
     
     Mat frame;
@@ -51,34 +45,32 @@ int main() {
         return 0;
     }
 
- 
     cap >> frame;
  
     Mat displayFrame = Mat(frame.size().height,frame.size().width,CV_8UC1,Scalar::all(0));
 
     threadStruct thread0 = {.inputFrame = &frame, .procFrame = &displayFrame, 
                       .rows = frame.size().width, .cols = frame.size().height, 
-                      .start = 0, .stop = (thread0.rows*thread0.cols/4) + thread0.rows};
+                      .start = 0, .stop = (frame.size().height/4) + 1};
 
     threadStruct thread1 = {.inputFrame = &frame, .procFrame = &displayFrame, 
                       .rows = frame.size().width, .cols = frame.size().height, 
-                      .start = (thread1.rows * thread1.cols/4) - thread1.rows, .stop = (thread1.rows*thread1.cols/2) + thread1.rows};
+                      .start = (frame.size().height/4) - 1, .stop = (frame.size().height/2) + 1};
 
     threadStruct thread2 = {.inputFrame = &frame, .procFrame = &displayFrame, 
                       .rows = frame.size().width, .cols = frame.size().height, 
-                      .start = (thread2.rows*thread2.cols/2) - thread2.rows, .stop = 3*(thread2.rows*thread2.cols/4) + thread2.rows};
+                      .start = (frame.size().height/2) - 1, .stop = 3*(frame.size().height/4) + 1};
 
     threadStruct thread3 = {.inputFrame = &frame, .procFrame = &displayFrame, 
                       .rows = frame.size().width, .cols = frame.size().height, 
-                      .start = (3*(thread3.cols*thread3.rows/4)) - thread3.rows, .stop = thread3.cols*thread3.rows};
+                      .start = (3*(frame.size().height/4)) -1 , .stop = frame.size().height};
                       
+    pthread_barrier_init(&barrier, NULL, numThreads);
 
-    setupFunction(numThreads);
-
-    int ret0 = pthread_create(&thread[0], NULL, grayscale_sobel,(void *)&thread0);
-    int ret1 = pthread_create(&thread[1], NULL, grayscale_sobel,(void *)&thread1);
-    int ret2 = pthread_create(&thread[2], NULL, grayscale_sobel,(void *)&thread2);
-    int ret3 = pthread_create(&thread[3], NULL, grayscale_sobel,(void *)&thread3);
+    int ret0 = pthread_create(&thread[0], NULL, grayscale_sobel_neon,(void *)&thread0);
+    int ret1 = pthread_create(&thread[1], NULL, grayscale_sobel_neon,(void *)&thread1);
+    int ret2 = pthread_create(&thread[2], NULL, grayscale_sobel_neon,(void *)&thread2);
+    int ret3 = pthread_create(&thread[3], NULL, grayscale_sobel_neon,(void *)&thread3);
 
     while(1){
     pthread_barrier_wait(&barrier);
@@ -88,14 +80,12 @@ int main() {
       if(frame.empty())
         break;
       
-
       imshow("Display image", displayFrame);
       
       if(waitKey(1)==27)
         break; //wait for ESC keystroke in window
     pthread_barrier_wait(&barrier);
     } 
-
     //close stream
     cap.release();
     destroyAllWindows();
@@ -108,42 +98,82 @@ int main() {
     return 0;
 }
 
-void* grayscale_sobel(void* threadArgs){
-   
-    int Gx, Gy, sum;
+void* grayscale_sobel_neon(void* threadArgs){
+
+    const int B_8L = 18;
+    const int G_8L = 183;
+    const int R_8L = 54;
+    
+    uint8x8_t NEON_B = vdup_n_u8(B_8L);
+    uint8x8_t NEON_G = vdup_n_u8(G_8L);
+    uint8x8_t NEON_R = vdup_n_u8(R_8L);
+    
+    uint16x8_t temp;
+    uint16x8_t x11 ,x12, x13, x21, x23, x31, x32, x33;
+
+    uint8x8_t result;
+
+    uint16x8_t Gx1, Gx2, Gx3, Gx4, Gx5, Gx6;
+    uint16x8_t Gy1, Gy2, Gy3, Gy4, Gy5, Gy6;
+    uint16x8_t Gx, Gy, sum;
 
     threadStruct *args = (threadStruct *)threadArgs;
-    Mat frame_int(args->cols,args->rows,CV_8UC1,Scalar::all(0));
-    int size = args->rows * args->cols;
-    int gray[size];
+    int size = args->cols * args-> rows;
+    int *gray[size];
 
     while(1){
+        //grayscale
+        for(int i = (args->start)/8; i < (args->stop)/8; i += 8, args->inputFrame->data+=24, gray+=8){
+                //load rgb values from data array, automatically assigns RGB to different registers
+                uint8x8x3_t rgb = vld3_u8(args->inputFrame->data);
+                //equation for 
+                temp = vmull_u8(rgb[0],NEON_B);
+                temp = vmlal_u8(temp,rgb[1],NEON_G);
+                temp = vmlal_u8(temp,rgb[2],NEON_R);
+            
+                result = vshrn_n_u16(temp,8);
 
-        for(int i = args->start; i < args->stop; i++){
-            gray[i] = 0.0722*(args->inputFrame->data[3*i]) + 0.7152*(args->inputFrame->data[3*i+1]) + 0.2126*(args->inputFrame->data[3*i+2]);
+                vst1_u8(gray, result);
         }
+        //sobel
+        for(int j = (args->start + args->rows)/8; j < (args->stop - args->rows)/8; j+=8 , gray+=8){
+            //load rows and columns for convolution
+            x11 = vld1q_s16(gray + j - args->rows - args->cols);
+            x12 = vld1q_s16(gray + j - args->rows);
+            x13 = vld1q_s16(gray + j - args->rows + args->cols);
+            x21 = vld1q_s16(gray + j - args->cols); 
+        
+            x23 = vld1q_s16(gray + j + args->cols);
+            x31 = vld1q_s16(gray + j + args->rows - args->cols);
+            x32 = vld1q_s16(gray + j + args->rows);
+            x33 = vld1q_s16(gray + j + args->rows + args->cols);
 
-        for(int j = args->start + args->rows; j < args->stop - args->rows; j++){
-            Gx = gray[j - 1 - args->rows] + gray[j - 1 + args->rows] 
-                - gray[j + 1 - args->rows] - gray[j + 1 + args->rows] 
-                + 2*(gray[j - 1] - gray[j + 1]);
+            Gx1 = vaddq_s16(x13,x33); //+1
+            Gx2 = vaddq_s16(x11,x31); //-1
+            Gx3 = vshll_high_n_s16(x21,1); //-2
+            Gx4 = vshll_high_n_s16(x23,1); //+2
+            Gx5 = vsubq_s16(Gx5,Gx5); // +2 + (-2)
+            Gx6 = vsubq_s16(Gx1,Gx2); // +1 + (-1)
+            Gx = vaddq_s16(Gx5,Gx6);
 
-            Gy = gray[j - 1 - args->rows] + gray[j + 1 - args->rows] 
-                - gray[j - 1 + args->rows] - gray[j + 1 + args->rows] 
-                + 2*(gray[j - args->rows] - gray[j + args->rows]);
+            Gy1 = vaddq_s16(x11,x13); //+1
+            Gy2 = vaddq_s16(x13,x33); //-1
+            Gy3 = vshll_high_n_s16(x12,1); //+2
+            Gy4 = vshll_high_n_s16(x32,1); //-2
+            Gy5 = vsubq_s16(Gy3,Gy4); // +2 + (-2)
+            Gy6 = vsubq_s16(Gy1,Gy2); // +1 + (-1)
+            Gy = vaddq_s16(Gy5,Gy6);
 
-            sum = (abs(Gx) + abs(Gy));
+            Gx = vabsq_s16(Gx); //take abs val Gx
+            Gy = vabsq_s16(Gy); //take abs val Gy
+            sum = vaddq_s16(Gx,Gy);
             
             //cap sum to 8-bit unsigned char
-            if(sum > 255){
-                sum = 255;
-            }   
+            sum = vqmovn_u16(sum);
 
-            args->procFrame->data[j] = (unsigned char) sum;
+            vst1_u8(args->procFrame->data[j],sum);
         }
-        
         pthread_barrier_wait(&barrier);
     }
-   
     return 0;
 }
