@@ -36,9 +36,9 @@ void* grayscale_sobel_neon(void* threadArgs);
 int main() {
 
     int numThreads = 5; //main(1) and pthreads(4)
-
+    cout << "opend";
     VideoCapture cap("ocean.mp4");
-    
+    cout << "opend3";
     Mat frame;
 
     if(!cap.isOpened()){
@@ -79,7 +79,6 @@ int main() {
       
       if(frame.empty())
         break;
-      
       imshow("Display image", displayFrame);
       
       if(waitKey(1)==27)
@@ -87,7 +86,7 @@ int main() {
     pthread_barrier_wait(&barrier);
     } 
     //close stream
-    cap.release();
+//    cap.release();
     destroyAllWindows();
 
     int ret4 = pthread_join(ret0, NULL);
@@ -109,17 +108,19 @@ void* grayscale_sobel_neon(void* threadArgs){
     uint8x8_t NEON_R = vdup_n_u8(R_8L);
     
     uint16x8_t temp;
-    uint16x8_t x11 ,x12, x13, x21, x23, x31, x32, x33;
-
+    uint16x8_t result2;
+    int16x8_t x11 ,x12, x13, x21, x23, x31, x32, x33;
+    int16x8_t result3;
     uint8x8_t result;
 
-    uint16x8_t Gx1, Gx2, Gx3, Gx4, Gx5, Gx6;
-    uint16x8_t Gy1, Gy2, Gy3, Gy4, Gy5, Gy6;
-    uint16x8_t Gx, Gy, sum;
+    int16x8_t Gx1, Gx2, Gx3, Gx4, Gx5, Gx6;
+    int16x8_t Gy1, Gy2, Gy3, Gy4, Gy5, Gy6;
+    int16x8_t Gx, Gy;
+    int16x8_t sum;
 
     threadStruct *args = (threadStruct *)threadArgs;
     int size = args->cols * args-> rows;
-    int *gray[size];
+    int16_t *gray = new int16_t[size];
 
     while(1){
         //grayscale
@@ -127,17 +128,20 @@ void* grayscale_sobel_neon(void* threadArgs){
                 //load rgb values from data array, automatically assigns RGB to different registers
                 uint8x8x3_t rgb = vld3_u8(args->inputFrame->data);
                 //equation for 
-                temp = vmull_u8(rgb[0],NEON_B);
-                temp = vmlal_u8(temp,rgb[1],NEON_G);
-                temp = vmlal_u8(temp,rgb[2],NEON_R);
+                temp = vmull_u8(rgb.val[0],NEON_B);
+                temp = vmlal_u8(temp,rgb.val[1],NEON_G);
+                temp = vmlal_u8(temp,rgb.val[2],NEON_R);
             
                 result = vshrn_n_u16(temp,8);
-
-                vst1_u8(gray, result);
+                result2 = vmovl_u8(result);
+                result3 = vreinterpretq_s16_u16(result2);
+                vst1q_s16(gray,result3);
+                //vst1_u8(gray, result);
         }
         //sobel
         for(int j = (args->start + args->rows)/8; j < (args->stop - args->rows)/8; j+=8 , gray+=8){
             //load rows and columns for convolution
+            //int16x8_t vld1q_s16(uint16_t)
             x11 = vld1q_s16(gray + j - args->rows - args->cols);
             x12 = vld1q_s16(gray + j - args->rows);
             x13 = vld1q_s16(gray + j - args->rows + args->cols);
@@ -150,16 +154,16 @@ void* grayscale_sobel_neon(void* threadArgs){
 
             Gx1 = vaddq_s16(x13,x33); //+1
             Gx2 = vaddq_s16(x11,x31); //-1
-            Gx3 = vshll_high_n_s16(x21,1); //-2
-            Gx4 = vshll_high_n_s16(x23,1); //+2
+            Gx3 = vmulq_n_s16(x21,2); //-2
+            Gx4 = vmulq_n_s16(x23,2); //+2
             Gx5 = vsubq_s16(Gx5,Gx5); // +2 + (-2)
             Gx6 = vsubq_s16(Gx1,Gx2); // +1 + (-1)
             Gx = vaddq_s16(Gx5,Gx6);
 
             Gy1 = vaddq_s16(x11,x13); //+1
             Gy2 = vaddq_s16(x13,x33); //-1
-            Gy3 = vshll_high_n_s16(x12,1); //+2
-            Gy4 = vshll_high_n_s16(x32,1); //-2
+            Gy3 = vmulq_n_s16(x12,2); //+2
+            Gy4 = vmulq_n_s16(x32,2); //-2
             Gy5 = vsubq_s16(Gy3,Gy4); // +2 + (-2)
             Gy6 = vsubq_s16(Gy1,Gy2); // +1 + (-1)
             Gy = vaddq_s16(Gy5,Gy6);
@@ -169,11 +173,13 @@ void* grayscale_sobel_neon(void* threadArgs){
             sum = vaddq_s16(Gx,Gy);
             
             //cap sum to 8-bit unsigned char
-            sum = vqmovn_u16(sum);
-
-            vst1_u8(args->procFrame->data[j],sum);
+            
+            uint16x8_t sum2 = vreinterpretq_u16_s16(sum);
+            uint8x8_t sum3 = vqmovn_u16(sum2);
+            vst1_u8(args->procFrame->data,sum3);
         }
         pthread_barrier_wait(&barrier);
     }
+    delete[] gray;
     return 0;
 }
