@@ -22,12 +22,18 @@ void *thread0Status;
 typedef struct threadArgs{
     Mat* inputFrame;
     Mat* procFrame;
-
-    int rows;
-    int cols;
     
+    int row; 
+    int col;
+    
+    Mat* grayscaleFrame;
+
+    int inputStart;
     int start;
-    int stop; 
+    int sobelStart;
+    int stop;
+    int sobelStop;
+     
 } threadStruct;
 
 
@@ -48,23 +54,53 @@ int main() {
     
     Mat displayFrame = Mat(frame.size().height, frame.size().width, CV_8UC1, Scalar::all(0));
     
-    int size_arg = frame.size().height*frame.size().width;
+    Mat grayFrame = Mat(frame.size().height, frame.size().width, CV_8UC1, Scalar::all(0));
+    
+    int size_arg = (frame.size().height*frame.size().width)/4;
 
-    threadStruct thread0 = {.inputFrame = &frame, .procFrame = &displayFrame, 
-                      .rows = frame.size().width, .cols = frame.size().height, 
-                      .start = 0, .stop = (size_arg/4) + 1};
+    threadStruct thread0 = {.inputFrame = &frame, 
+                          .procFrame = &displayFrame, 
+                          .row = frame.size().width, 
+                          .col = frame.size().height,
+                          .grayscaleFrame = &grayFrame, 
+                          .inputStart = 0, 
+                          .start = 0, 
+                          .sobelStart = frame.size().width,
+                          .stop = (size_arg), 
+                          .sobelStop = 8*size_arg};
+                      
+    threadStruct thread1 = {.inputFrame = &frame, 
+                          .procFrame = &displayFrame, 
+                          .row = frame.size().width, 
+                          .col = frame.size().height,
+                          .grayscaleFrame = &grayFrame, 
+                          .inputStart = 3*size_arg,
+                          .start = (size_arg), 
+                          .sobelStart = (size_arg), 
+                          .stop = 2*(size_arg), 
+                          .sobelStop = 16*size_arg};
 
-    threadStruct thread1 = {.inputFrame = &frame, .procFrame = &displayFrame, 
-                      .rows = frame.size().width, .cols = frame.size().height, 
-                      .start = (size_arg/4) - frame.size().width, .stop = (size_arg/2) + 1};
+    threadStruct thread2 = {.inputFrame = &frame, 
+                          .procFrame = &displayFrame, 
+                          .row = frame.size().width, 
+                          .col = frame.size().height,
+                          .grayscaleFrame = &grayFrame, 
+                          .inputStart = 6*size_arg, 
+                          .start = 2*size_arg, 
+                          .sobelStart = 2*(size_arg), 
+                          .stop = 3*size_arg, 
+                          .sobelStop = 24*size_arg};
 
-    threadStruct thread2 = {.inputFrame = &frame, .procFrame = &displayFrame, 
-                      .rows = frame.size().width, .cols = frame.size().height, 
-                      .start = (size_arg/2) - frame.size().width, .stop = 3*(size_arg/4) + 1};
-
-    threadStruct thread3 = {.inputFrame = &frame, .procFrame = &displayFrame, 
-                      .rows = frame.size().width, .cols = frame.size().height, 
-                      .start = (3*(size_arg/4)) - frame.size().width, .stop = size_arg - 3*frame.size().width};
+    threadStruct thread3 = {.inputFrame = &frame, 
+                            .procFrame = &displayFrame, 
+                            .row = frame.size().width, 
+                            .col = frame.size().height,
+                            .grayscaleFrame = &grayFrame, 
+                            .inputStart = 9*(size_arg), 
+                            .start = 3*size_arg, 
+                            .sobelStart = 3*size_arg, 
+                            .stop = 4*size_arg, 
+                            .sobelStop = 32*size_arg - frame.size().width};
                       
     pthread_barrier_init(&barrier, NULL, numThreads);
 
@@ -78,9 +114,11 @@ int main() {
         //read frame
         cap >> frame;
 
-        if(frame.empty())
-        break;
-        pthread_barrier_wait(&barrier);
+        if(frame.empty()){
+            //~ break;
+                cout << "error" << endl;
+                return 0;}
+        //~ pthread_barrier_wait(&barrier);
         imshow("Display image", displayFrame);
 
         if(waitKey(1)==27)
@@ -111,11 +149,10 @@ void grayscale_neon(const uint8_t *input, uint8_t *gray, int num_pixels) {
     uint8x8_t NEON_R = vdup_n_u8(R_8L);
     
     uint16x8_t temp;
-    uint16x8_t result2;
-    int16x8_t x11 ,x12, x13, x21, x23, x31, x32, x33;
-    int16x8_t result3;
     uint8x8_t result;
-    
+        
+    pthread_barrier_wait(&barrier);
+
     for (int i = 0; i < num_pixels / 8; ++i, input += 24, gray += 8) {
         uint8x8x3_t rgb = vld3_u8(input);
         
@@ -127,7 +164,75 @@ void grayscale_neon(const uint8_t *input, uint8_t *gray, int num_pixels) {
         
         vst1_u8(gray, result);
     }
+}
 
+void sobel_neon(const uint8_t *input, uint8_t *sobel, int num_pixels, int rows, int cols){
+
+    int16x8_t two = vdupq_n_s16(2);
+    
+    pthread_barrier_wait(&barrier);
+    //sobel
+    for(int j = 0; j < num_pixels/8; j+=8, input+=8, sobel+=8){
+        const uint8_t* x11 = input - rows - 1; 
+        const uint8_t* x12 = input - rows;
+        const uint8_t* x13 = input - rows + 1;
+        
+        const uint8_t* x21 = input - 1;
+        const uint8_t* x23 = input + 1;
+        
+        const uint8_t* x31 = input + rows - 1;
+        const uint8_t* x32 = input + rows;
+        const uint8_t* x33 = input + rows + 1;
+        
+        
+        uint8x8_t loadx11 = vld1_u8(x11);
+        uint8x8_t loadx12 = vld1_u8(x12);
+        uint8x8_t loadx13 = vld1_u8(x13);
+        uint8x8_t loadx21 = vld1_u8(x21);
+        uint8x8_t loadx23 = vld1_u8(x23);
+        uint8x8_t loadx31 = vld1_u8(x31);
+        uint8x8_t loadx32 = vld1_u8(x32);
+        uint8x8_t loadx33 = vld1_u8(x33);
+        
+        uint16x8_t x11_16bit = vmovl_u8(loadx11);
+        uint16x8_t x12_16bit = vmovl_u8(loadx12);
+        uint16x8_t x13_16bit = vmovl_u8(loadx13);
+        uint16x8_t x21_16bit = vmovl_u8(loadx21);
+        uint16x8_t x23_16bit = vmovl_u8(loadx23); 
+        uint16x8_t x31_16bit = vmovl_u8(loadx31);
+        uint16x8_t x32_16bit = vmovl_u8(loadx32);
+        uint16x8_t x33_16bit = vmovl_u8(loadx33);
+        
+        uint16x8_t Gx1 = vaddq_u16(x13_16bit,x23_16bit); //+1
+        uint16x8_t Gx2 = vaddq_u16(x11_16bit,x31_16bit); //-1
+        uint16x8_t Gx3 = vshlq_u16(x21_16bit,two); //-2
+        uint16x8_t Gx4 = vshlq_u16(x23_16bit,two); //+2
+        uint16x8_t Gx5 = vsubq_u16(Gx4,Gx3); // +2 + (-2)
+        uint16x8_t Gx6 = vsubq_u16(Gx1,Gx2); // +1 + (-1)
+        uint16x8_t Gx = vaddq_u16(Gx5,Gx6);
+        
+        int16x8_t temp_x = vreinterpretq_s16_u16(Gx);
+        temp_x = vabsq_s16(temp_x);
+        Gx = vreinterpretq_u16_s16(temp_x);
+
+        uint16x8_t Gy1 = vaddq_u16(x11_16bit,x13_16bit); //+1
+        uint16x8_t Gy2 = vaddq_u16(x31_16bit,x33_16bit); //-1
+        uint16x8_t Gy3 = vshlq_u16(x12_16bit,two); //+2
+        uint16x8_t Gy4 = vshlq_u16(x32_16bit,two); //-2
+        uint16x8_t Gy5 = vsubq_u16(Gy3,Gy4); // +2 + (-2)
+        uint16x8_t Gy6 = vsubq_u16(Gy1,Gy2); // +1 + (-1)
+        uint16x8_t Gy = vaddq_u16(Gy5,Gy6);
+        
+        int16x8_t temp_y = vreinterpretq_s16_u16(Gy);
+        temp_y = vabsq_s16(temp_y);
+        Gy = vreinterpretq_u16_s16(temp_x);
+        
+        uint16x8_t sum = vaddq_u16(Gx,Gy);
+
+        uint8x8_t sum_8bit = vqmovn_u16(sum);
+        vst1_u8(sobel,sum_8bit);   
+          
+    }
 }
 
 void* grayscale_sobel_neon(void* threadArgs){
@@ -136,114 +241,16 @@ void* grayscale_sobel_neon(void* threadArgs){
     
     int size = ((args->stop - args->start)) + 1;
     
-    //~ uint8_t *gray = new uint8_t[size];
-    
+    int sobelSize = ((args->sobelStop - args->sobelStart)) + 1;
+        
     while(1) {
-        grayscale_neon(args->inputFrame->data + args->start, args->procFrame->data + args->start, size);
+        grayscale_neon((args->inputFrame->data + args->inputStart), args->grayscaleFrame->data + args->start, size);
         
         pthread_barrier_wait(&barrier);
-    }
-    
-    //~ const int B_8L = 18;
-    //~ const int G_8L = 183;
-    //~ const int R_8L = 54;
-    
-    //~ uint8x8_t NEON_B = vdup_n_u8(B_8L);
-    //~ uint8x8_t NEON_G = vdup_n_u8(G_8L);
-    //~ uint8x8_t NEON_R = vdup_n_u8(R_8L);
-    
-    //~ uint16x8_t temp;
-    //~ uint16x8_t result2;
-    //~ int16x8_t x11 ,x12, x13, x21, x23, x31, x32, x33;
-    //~ int16x8_t result3;
-    //~ uint8x8_t result;
-
-    //~ int16x8_t Gx1, Gx2, Gx3, Gx4, Gx5, Gx6;
-    //~ int16x8_t Gy1, Gy2, Gy3, Gy4, Gy5, Gy6;
-    //~ int16x8_t Gx, Gy;
-    //~ int16x8_t sum;
-
-    //~ threadStruct *args = (threadStruct *)threadArgs;
-    //~ int size = args->cols * args->rows;
-    //~ int16_t *gray = new int16_t[size];
-    //~ int16_t *startGray = gray;
-    //~ int start = args->start;
-    //~ uchar *inputPointer = args->inputFrame->data;
-    //~ uchar *procPointer = args->procFrame->data; 
-    //~ while(1){
-
-        //~ for(int i = args->start; i < args->stop && i + 8 < args->stop; i+=8 /*args->inputFrame->data+=24,*/, start+=24, gray+=8){
-                //~ //load rgb values from data array, automatically assigns RGB to different registers
-                //~ uint8x8x3_t rgb = vld3_u8((args->inputFrame->data+start));
-                //~ //equation for 
-                //~ temp = vmull_u8(rgb.val[0],NEON_B);
-                //~ temp = vmlal_u8(temp,rgb.val[1],NEON_G);
-                //~ temp = vmlal_u8(temp,rgb.val[2],NEON_R);
-            
-                //~ result = vshrn_n_u16(temp,8);
-                //~ result2 = vmovl_u8(result);
-                //~ result3 = vreinterpretq_s16_u16(result2);
-                //~ vst1q_s16(gray,result3);
-                
-                //~ uint16x8_t sum2 = vreinterpretq_u16_s16(result3);
-                //~ uint8x8_t sum3 = vqmovn_u16(sum2);
-                //~ vst1_u8(args->procFrame->data+i,sum3);
-                //~ //cout << i <<endl;
-                //~ //gray = startGray;
-                //~ //vst1_u8(gray, result);
-        //~ }
-
-        //~ gray = startGray;
-        //~ args->procFrame->data = procPointer;
-        //~ args->inputFrame->data = inputPointer;
-        /*
-        //sobel
-        for(int j = args->start; j < args->stop; j+=8, args->procFrame->data+=8, gray+=8){
-         //   int j = 0;
-            //load rows and columns for convolution
-            //int16x8_t vld1q_s16(uint16_t)
-            x11 = vld1q_s16(gray + j - args->rows - args->cols);
-            x12 = vld1q_s16(gray + j - args->rows);
-            x13 = vld1q_s16(gray + j - args->rows + args->cols);
-            x21 = vld1q_s16(gray + j - args->cols); 
         
-            x23 = vld1q_s16(gray + j + args->cols);
-            x31 = vld1q_s16(gray + j + args->rows - args->cols);
-            x32 = vld1q_s16(gray + j + args->rows);
-            x33 = vld1q_s16(gray + j + args->rows + args->cols);
-
-            Gx1 = vaddq_s16(x13,x33); //+1
-            Gx2 = vaddq_s16(x11,x31); //-1
-            Gx3 = vmulq_n_s16(x21,2); //-2
-            Gx4 = vmulq_n_s16(x23,2); //+2
-            Gx5 = vsubq_s16(Gx5,Gx5); // +2 + (-2)
-            Gx6 = vsubq_s16(Gx1,Gx2); // +1 + (-1)
-            Gx = vaddq_s16(Gx5,Gx6);
-
-            Gy1 = vaddq_s16(x11,x13); //+1
-            Gy2 = vaddq_s16(x13,x33); //-1
-            Gy3 = vmulq_n_s16(x12,2); //+2
-            Gy4 = vmulq_n_s16(x32,2); //-2
-            Gy5 = vsubq_s16(Gy3,Gy4); // +2 + (-2)
-            Gy6 = vsubq_s16(Gy1,Gy2); // +1 + (-1)
-            Gy = vaddq_s16(Gy5,Gy6);
-
-            Gx = vabsq_s16(Gx); //take abs val Gx
-            Gy = vabsq_s16(Gy); //take abs val Gy
-            sum = vaddq_s16(Gx,Gy);
-            
-            //cap sum to 8-bit unsigned char
-            
-            uint16x8_t sum2 = vreinterpretq_u16_s16(sum);
-            uint8x8_t sum3 = vqmovn_u16(sum2);
-            vst1_u8(args->procFrame->data,sum3);
-            cout << (int) args->procFrame->data << endl;
-        }
-        gray = startGray;
-        args->procFrame->data = procPointer;
-        */
-        //~ pthread_barrier_wait(&barrier);
-    //~ }
-    //~ delete[] gray;
-    //~ return 0;
+        sobel_neon(args->grayscaleFrame->data + args->sobelStart, args->procFrame->data + args->sobelStart, sobelSize, args->row, args->col);
+        
+        pthread_barrier_wait(&barrier);
+        
+    }
 }
